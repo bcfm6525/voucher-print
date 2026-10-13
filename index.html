@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>전표 출력</title>
+<!-- 컬러 프린터 PC용: 전표 자동작성 앱이 [온라인전송]으로 GitHub에 올린 전표 PDF를 보여 주고 바로 인쇄합니다.
+     토큰은 이 PC의 이 브라우저에만 저장됩니다 (파일 안에는 들어 있지 않음). -->
+<style>
+  :root { --navy: #172b46; --line: #dfe4ea; --muted: #6a7686; --ok: #23774b; --warn: #9a5a0c; --bad: #c0392b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 -apple-system, "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; background: #eef1f4; color: #1d2735; }
+  header { background: var(--navy); color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
+  header h1 { font-size: 20px; margin: 0; }
+  header .repo { color: #b9c8da; font-size: 13px; flex: 1; }
+  button { font: inherit; border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; background: #e7ecf2; color: #24364c; font-weight: 600; }
+  button.primary { background: #1f6f43; color: #fff; font-size: 18px; padding: 12px 28px; }
+  button.primary:disabled { opacity: .45; cursor: not-allowed; }
+  header button { background: #2b4669; color: #fff; }
+  .layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 60px); }
+  aside { border-right: 1px solid var(--line); background: #fff; overflow: auto; }
+  .item { display: block; width: 100%; text-align: left; border-radius: 0; background: #fff; border-bottom: 1px solid #edf0f3; padding: 12px 16px; font-weight: 400; }
+  .item:hover { background: #f4f7fa; }
+  .item.active { background: #e6eefa; }
+  .item .t { font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .item .s { color: var(--muted); font-size: 12.5px; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 700; white-space: nowrap; flex: none; }
+  .badge.new { background: #fdecc8; color: #8a5300; }
+  .badge.done { background: #e2f3e9; color: var(--ok); }
+  main { display: flex; flex-direction: column; overflow: hidden; }
+  .bar { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: #fff; border-bottom: 1px solid var(--line); }
+  .bar .title { flex: 1; font-weight: 700; font-size: 16px; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  #pages { flex: 1; overflow: auto; padding: 20px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  #pages img { background: #fff; box-shadow: 0 2px 8px #0002; max-width: 100%; height: auto; }
+  .msg { padding: 40px; color: var(--muted); text-align: center; }
+  .msg.err { color: var(--bad); }
+  dialog { border: 0; border-radius: 12px; padding: 24px; width: min(92vw, 520px); box-shadow: 0 20px 60px #0004; }
+  dialog h2 { margin: 0 0 6px; }
+  dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #44536a; margin-top: 12px; }
+  dialog input { font: inherit; border: 1px solid #ccd5df; border-radius: 6px; padding: 9px 10px; }
+  .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  #printArea { display: none; }
+  @media print {
+    body { background: #fff; }
+    header, .layout, dialog { display: none !important; }
+    #printArea { display: block; }
+    #printArea img { display: block; break-after: page; }
+    #printArea img:last-child { break-after: auto; }
+  }
+</style>
+<style id="pageStyle"></style>
+</head>
+<body>
+<header>
+  <h1>전표 출력</h1>
+  <span class="repo" id="repoLabel"></span>
+  <button id="refreshBtn">새로고침</button>
+  <button id="setupBtn">설정</button>
+</header>
+<div class="layout">
+  <aside id="list"><div class="msg">불러오는 중…</div></aside>
+  <main>
+    <div class="bar">
+      <span class="title" id="current">전표를 고르세요</span>
+      <span class="hint">인쇄 창에서 배율 <b>100%(실제 크기)</b>, 여백 <b>없음</b></span>
+      <button class="primary" id="printBtn" disabled>인쇄</button>
+    </div>
+    <div id="pages"></div>
+  </main>
+</div>
+<div id="printArea"></div>
+
+<dialog id="setup">
+  <form method="dialog">
+    <h2>처음 한 번 설정</h2>
+    <p class="hint">전표 자동작성 앱의 [환경설정 › GitHub 업로드] 안내에서 만든 <b>읽기 전용 토큰</b>을 넣으세요. 토큰은 이 PC의 이 브라우저에만 저장됩니다.</p>
+    <label>저장소 (소유자/이름)<input name="repo" required></label>
+    <label>브랜치<input name="branch"></label>
+    <label>폴더<input name="folder"></label>
+    <label>읽기 전용 토큰<input name="token" type="password" autocomplete="off" required></label>
+    <div class="actions"><button value="cancel" formnovalidate>닫기</button><button value="save" class="primary">저장</button></div>
+  </form>
+</dialog>
+
+<script type="module">
+const DEFAULTS = { repo: '__REPO__', branch: '__BRANCH__', folder: '__FOLDER__' };
+const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38';
+const API = new URLSearchParams(location.hash.slice(1)).get('api') || 'https://api.github.com';
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const store = {
+  get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 저장 불가 */ } },
+};
+let cfg = { ...DEFAULTS, ...store.get('voucherPrint.config', {}) };
+for (const k of ['repo', 'branch', 'folder']) if (String(cfg[k]).startsWith('__')) cfg[k] = k === 'branch' ? 'main' : k === 'folder' ? '전표' : '';
+// 북마크 주소에 ?repo=소유자/저장소 가 붙어 있으면 그 저장소를 씀 (공개 페이지 안에는 저장소 이름을 넣지 않기 위해)
+const params = new URLSearchParams(location.search);
+for (const k of ['repo', 'branch', 'folder']) if (params.get(k)) cfg[k] = params.get(k);
+const printed = new Set(store.get('voucherPrint.printed', []));
+let items = [], selected = null;
+
+const keyOf = it => `${it.path}@${it.uploadedAt}`;
+const encPath = p => p.split('/').map(encodeURIComponent).join('/');
+
+async function gh(path) {
+  let res;
+  try {
+    res = await fetch(`${API}/repos/${cfg.repo}/contents/${encPath(path)}?ref=${encodeURIComponent(cfg.branch || 'main')}`, {
+      headers: { Authorization: `Bearer ${cfg.token}`, Accept: 'application/vnd.github.raw+json', 'X-GitHub-Api-Version': '2022-11-28' },
+      cache: 'no-store',
+    });
+  } catch { throw new Error('GitHub에 연결하지 못했습니다. 인터넷 연결을 확인하세요.'); }
+  if (res.status === 401) throw new Error('토큰이 올바르지 않거나 만료되었습니다. [설정]에서 다시 넣으세요.');
+  if (res.status === 404) throw new Error('저장소나 출력 목록을 찾을 수 없습니다. 저장소 이름과 토큰 권한을 확인하세요. (아직 [온라인전송]을 한 번도 안 했다면 목록이 없습니다)');
+  if (!res.ok) throw new Error(`GitHub 오류 (${res.status})`);
+  return res;
+}
+
+function renderList() {
+  $('repoLabel').textContent = cfg.repo ? `${cfg.repo} · ${cfg.folder}` : '';
+  if (!items.length) { $('list').innerHTML = '<div class="msg">아직 올라온 전표가 없습니다.</div>'; return; }
+  $('list').innerHTML = items.map((it, i) => `<button class="item ${selected === it ? 'active' : ''}" data-i="${i}">
+    <span class="t">${esc(it.title)} ${printed.has(keyOf(it)) ? '<span class="badge done">인쇄함</span>' : '<span class="badge new">새 전표</span>'}</span>
+    <span class="s">${esc(it.kind || '')} · 올린 시각 ${esc(new Date(it.uploadedAt).toLocaleString('ko-KR'))}</span></button>`).join('');
+}
+
+async function loadList() {
+  $('list').innerHTML = '<div class="msg">불러오는 중…</div>';
+  try {
+    const res = await gh(`${cfg.folder ? cfg.folder + '/' : ''}출력목록.json`);
+    items = (await res.json()).sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
+    renderList();
+    // 아직 인쇄하지 않은 가장 최근 전표를 바로 보여 줌
+    const first = items.find(it => !printed.has(keyOf(it))) || items[0];
+    if (first) await show(first);
+  } catch (e) {
+    $('list').innerHTML = `<div class="msg err">${esc(e.message)}</div>`;
+  }
+}
+
+let pdfjsLib = null;
+async function show(it) {
+  selected = it;
+  renderList();
+  $('current').textContent = it.title;
+  $('printBtn').disabled = true;
+  $('pages').innerHTML = '<div class="msg">전표를 불러오는 중…</div>';
+  try {
+    const bytes = new Uint8Array(await (await gh(it.path)).arrayBuffer());
+    pdfjsLib ||= await import(`${PDFJS}/pdf.min.mjs`);
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS}/pdf.worker.min.mjs`;
+    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const imgs = [];
+    let pageMm = null;
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const page = await pdf.getPage(n);
+      const base = page.getViewport({ scale: 1 });                       // 1pt = 1/72 inch
+      const vp = page.getViewport({ scale: 300 / 72 });                   // 300dpi로 그려서 선명하게 인쇄
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+      const mm = { w: base.width * 25.4 / 72, h: base.height * 25.4 / 72 };
+      pageMm ||= mm;
+      imgs.push({ src: canvas.toDataURL('image/png'), mm });
+    }
+    if (selected !== it) return;
+    // 화면 미리보기와 인쇄용(실제 크기) 두 벌
+    $('pages').innerHTML = imgs.map(p => `<img src="${p.src}" style="width:${(p.mm.w * 3.78).toFixed(0)}px" alt="">`).join('');
+    $('printArea').innerHTML = imgs.map(p => `<img src="${p.src}" style="width:${p.mm.w.toFixed(2)}mm;height:${p.mm.h.toFixed(2)}mm" alt="">`).join('');
+    $('pageStyle').textContent = `@page { size: ${pageMm.w.toFixed(2)}mm ${pageMm.h.toFixed(2)}mm; margin: 0; }`;
+    $('printBtn').disabled = false;
+  } catch (e) {
+    if (selected === it) $('pages').innerHTML = `<div class="msg err">${esc(e.message)}</div>`;
+  }
+}
+
+$('list').addEventListener('click', e => { const b = e.target.closest('.item'); if (b) show(items[+b.dataset.i]); });
+$('printBtn').onclick = () => {
+  if (!selected) return;
+  window.print();
+  printed.add(keyOf(selected));
+  store.set('voucherPrint.printed', [...printed].slice(-500));
+  renderList();
+};
+$('refreshBtn').onclick = loadList;
+
+const setup = $('setup'), form = setup.querySelector('form');
+function openSetup() {
+  for (const k of ['repo', 'branch', 'folder']) form.elements[k].value = cfg[k] || '';
+  form.elements.token.value = cfg.token || '';
+  setup.showModal();
+}
+setup.addEventListener('close', () => {
+  if (setup.returnValue !== 'save') return;
+  cfg = { repo: form.elements.repo.value.trim(), branch: form.elements.branch.value.trim() || 'main', folder: form.elements.folder.value.trim(), token: form.elements.token.value.trim() };
+  store.set('voucherPrint.config', cfg);
+  loadList();
+});
+$('setupBtn').onclick = openSetup;
+
+if (!cfg.repo || !cfg.token) { renderList(); $('list').innerHTML = '<div class="msg">오른쪽 위 [설정]에서 토큰을 넣어 주세요.</div>'; openSetup(); }
+else loadList();
+</script>
+</body>
+</html>
